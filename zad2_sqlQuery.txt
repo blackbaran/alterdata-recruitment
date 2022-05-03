@@ -1,0 +1,72 @@
+-- dokumentacja techniczna https://www.ncei.noaa.gov/DATA/global-summary-OF-the-day/doc/readme.txt
+WITH
+  -- create df to select columns join tables and filter observations only from 2000 year
+  select_data AS (
+  SELECT
+    df_data.stn AS station_id,
+    s_names.name AS station_name,
+    df_data.mo AS month,
+    df_data.da AS day,
+    df_data.temp AS temp,
+    df_data.PRCP AS prcp,
+  FROM
+    `bigquery-public-data.noaa_gsod.gsod2000` df_data
+  LEFT JOIN
+    `bigquery-public-data.noaa_gsod.stations` s_names
+  ON
+    df_data.stn = s_names.usaf
+    AND df_data.wban = s_names.wban
+  WHERE
+    1=1
+    AND df_data.year = '2000' ),
+  -- calculate moving averages for temp and for prcp by stations in months and days
+  calculate_df AS (
+  SELECT
+    station_id,
+    station_name,
+    temp,
+    prcp,
+    temp - AVG (temp) OVER (PARTITION BY station_id, station_name ORDER BY month, day ROWS BETWEEN 4 PRECEDING AND 1 PRECEDING) AS temp_change,
+    LAG(prcp) OVER (PARTITION BY station_id, station_name ORDER BY month, day) as_prcp_day_before,
+    AVG (prcp) OVER (PARTITION BY station_id, station_name ORDER BY month, day ROWS BETWEEN 7 PRECEDING AND 1 PRECEDING) AS prcp_moving_avg,
+  FROM
+    select_data ),
+  -- df to filer data- only where change in tempeture was higher than 5 degrees, prcp was higher than moving averages from last 7 days, and
+  -- day before was no prcp
+  filter_df AS (
+  SELECT
+    station_id,
+    station_name
+  FROM
+    calculate_df
+  WHERE
+    1=1
+    AND temp_change <= -5
+  -- in documentaction: Many stations do not report “0” on days with no precipitation, therefore “99.99” will often appear on these days.
+    AND (as_prcp_day_before = 0
+      OR as_prcp_day_before = 99.99)
+    AND PRCP > prcp_moving_avg ),
+  -- count how many weather breakdowns were by stations
+  weather_breakdown_count AS (
+  SELECT
+    station_id,
+    Station_name,
+    COUNT(station_id) AS n_of_weather_breakdown
+  FROM
+    filter_df
+  GROUP BY
+    station_id,
+    station_name )
+-- Findal df, select stationts with the highest number of weather breakdown in 2000
+SELECT
+  station_id,
+  station_name,
+  n_of_weather_breakdown
+FROM
+  weather_breakdown_count
+WHERE
+  n_of_weather_breakdown = (
+  SELECT
+    MAX(n_of_weather_breakdown)
+  FROM
+    weather_breakdown_count)
